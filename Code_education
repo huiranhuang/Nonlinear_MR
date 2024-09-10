@@ -1,0 +1,305 @@
+library(stats)
+library(AER)
+library(MASS)
+library(dplyr)
+library(broom)
+library(ggplot2)
+library(tidyr)
+library(metafor)
+library(quantreg)
+library(gridExtra)
+
+data_origin <- read.csv("UKB_Pheno_&_PRS.csv", header=TRUE)
+names(data_origin)
+summary(data_origin)
+dim(data_origin) #get the number of objects of study
+#334757 individuals included
+
+#0 denotes female and 1 denotes male
+data_origin$Sex.0.0 <- as.factor(data_origin$Sex.0.0)
+#transformation of the center column
+data_origin$UK.Biobank.assessment.centre.0.0 <- as.factor(data_origin$UK.Biobank.assessment.centre.0.0)
+
+#Build a data frame with all variable we need to use for analysis
+data <- data.frame(PRS = data_origin[, 6], Qualification = data_origin[, 17], WMH = data_origin[, 19], 
+                   FIS = data_origin[, 24], age = data_origin[, 8], sex = data_origin[, 12], center = data_origin[, 11])
+head(data)
+
+# Create a frequency plot for the sex variable
+ggplot(data, aes(x = age)) +
+  geom_histogram(binwidth = 5, fill = "lightblue", color = "black") +
+  labs(title = "Histogram of Age", x = "Age", y = "Frequency") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))  # Center the title
+
+# Create a histogram for the FIS variable with a centered title
+ggplot(data, aes(x = FIS)) +
+  geom_histogram(binwidth = 1, fill = "lightblue", color = "black") +
+  labs(title = "Histogram of FIS", x = "FIS", y = "Frequency") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))  # Center the title
+
+# Create a histogram for the WMH variable with a centered title
+ggplot(data, aes(x = WMH)) +
+  geom_histogram(binwidth = 1, fill = "lightblue", color = "lightblue") +
+  labs(title = "Histogram of WMH", x = "WMH", y = "Frequency") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))  # Center the title
+
+
+
+#Data cleaning for two separate outcomes
+#Delete all NA rows
+data_WMH <- data[,-4]
+data_FIS <- data[,-3]
+rows_with_nas1 <- apply(data_WMH, 1, function(x) any(is.na(x)))
+rows_with_nas2 <- apply(data_FIS, 1, function(x) any(is.na(x)))
+data_clean_WMH <- data_WMH[!rows_with_nas1, ]
+data_clean_FIS <- data_FIS[!rows_with_nas2, ]
+head(data_clean_WMH)
+dim(data_clean_WMH)
+#31198 individuals are included for study with outcome WMH
+head(data_clean_FIS)
+dim(data_clean_FIS)
+#86141 individuals are included for study with outcome FIS
+
+#-3 denotes no answer for qualification
+#-7 denotes unknown qualification
+#Delete qualification values of -3 and -7
+data_clean_WMH <- data_clean_WMH[!(data_clean_WMH$Qualification %in% c(-3, -7)), ]
+data_clean_FIS <- data_clean_FIS[!(data_clean_FIS$Qualification %in% c(-3, -7)), ]
+head(data_clean_WMH)
+dim(data_clean_WMH)
+#29064 individuals are included for study with outcome WMH
+head(data_clean_FIS)
+dim(data_clean_FIS)
+#79751 individuals are included for study with outcome FIS
+
+# Transforming values in 'Qualification' column using case_when
+data_clean_WMH <- data_clean_WMH %>%
+  mutate(Qualification = case_when(
+    Qualification == 1 ~ 19,
+    Qualification == 2 ~ 13,
+    Qualification == 3 ~ 10,
+    Qualification == 4 ~ 10,
+    Qualification == 5 ~ 15,
+    Qualification == 6 ~ 17,
+    TRUE ~ Qualification  # Default case to keep original values for other cases
+  ))
+
+data_clean_FIS <- data_clean_FIS %>%
+  mutate(Qualification = case_when(
+    Qualification == 1 ~ 19,
+    Qualification == 2 ~ 13,
+    Qualification == 3 ~ 10,
+    Qualification == 4 ~ 10,
+    Qualification == 5 ~ 15,
+    Qualification == 6 ~ 17,
+    TRUE ~ Qualification  # Default case to keep original values for other cases
+  ))
+head(data_clean_WMH)
+head(data_clean_FIS)
+
+################################################################################
+#Build ordinary regression model for exposure (qualification) on  IV (PRS)
+sum(is.na(data$PRS))
+#There is no NA in column PRS
+sum(is.na(data$Qualification))
+#No NA in other columns for adjustment
+sum(is.na(data$age))
+sum(is.na(data$sex))
+sum(is.na(data$center))
+#There are 318 NA in column Qualification
+data_reg <- data.frame(PRS = data$PRS, Qualification =data$Qualification, age = data$age,
+                       sex = data$sex, center = data$center)
+rows_with_nas_reg <- apply(data_reg, 1, function(x) any(is.na(x)))
+data_clean_reg <- data_reg[!rows_with_nas_reg, ]
+dim(data_clean_reg)
+
+#Delete qualification values of -3 and -7
+data_clean_reg <- data_clean_reg[!(data_clean_reg$Qualification %in% c(-3, -7)), ]
+dim(data_clean_reg)
+#2705076 individuals with meaningful qualification level and no NA 
+head(data_clean_reg)
+
+# Transforming values in 'Qualification' column using case_when
+data_clean_reg <- data_clean_reg %>%
+  mutate(Qualification = case_when(
+    Qualification == 1 ~ 19,
+    Qualification == 2 ~ 13,
+    Qualification == 3 ~ 10,
+    Qualification == 4 ~ 10,
+    Qualification == 5 ~ 15,
+    Qualification == 6 ~ 17,
+    TRUE ~ Qualification  # Default case to keep original values for other cases
+  ))
+
+#Fit linear regression model for exposure on IV
+OLS <- lm(data_clean_reg$Qualification~data_clean_reg$PRS)
+summary(OLS)
+#R-squared: 0.01872
+#F-statistic 5248 with p-value < 0.01
+
+################################################################################
+#Do IV analysis to get estimates of causal effect of exposure on outcome
+#Estimate causal effect for educational attainment on WMH
+#make adjustments of sex, age and center
+iv_model_WMH <- ivreg(WMH ~ Qualification + age + sex + center | PRS + age + sex + center, data = data_clean_WMH)
+summary(iv_model_WMH, diagnostics = TRUE)
+iv_model_WMH_log <- ivreg(log(WMH) ~ Qualification + age + sex + center | PRS + age + sex + center, data = data_clean_WMH)
+summary(iv_model_WMH_log, diagnostics = TRUE)
+
+#Estimate causal effect for educational attainment on FIS
+#make adjustments of sex, age and center
+iv_model_FIS <- ivreg(FIS ~ Qualification + age + sex + center | PRS + age + sex + center, data = data_clean_FIS)
+summary(iv_model_FIS, diagnostics = TRUE)
+
+################################################################################
+# Get localized average causal effect estimates with outcome WMH
+# First-stage regression: Qualification ~ PRS + covariates
+regress_WMH <- lm(Qualification ~ PRS + age + sex + center, data = data_clean_WMH)
+# Calculate residuals
+data_clean_WMH$residuals <- residuals(regress_WMH)
+
+# Divide the residuals into 5 quantile groups
+data_clean_WMH$quantile_group <- cut(data_clean_WMH$residuals,
+                                     breaks = quantile(data_clean_WMH$residuals, probs = seq(0, 1, by = 0.2)),
+                                     include.lowest = TRUE,
+                                     labels = FALSE)
+head(data_clean_WMH)
+
+# Function to perform IV regression and extract needed statistics
+compute_iv_stats <- function(data) {
+  model_iv <- ivreg(log(WMH) ~ Qualification + age + sex + center | PRS + age + sex + center, data = data)
+  weak_instrument_test <- summary(model_iv, diagnostics = TRUE)$diagnostics[1, ]
+  coef_est <- coef(summary(model_iv))[2, 1]  # Coefficient estimate
+  std_error <- coef(summary(model_iv))[2, 2]  # Standard error
+  weak_instr_stat <- weak_instrument_test["statistic"]  # Weak instrument statistic
+  weak_instr_pval <- weak_instrument_test["p-value"]  # p-value for weak instrument test
+  
+  c(Estimate = coef_est, Std.Error = std_error, Weak.Instrument.Statistic = weak_instr_stat, P.Value = weak_instr_pval)
+}
+
+# Apply function to each quantile group
+results_iv_WMH <- by(data_clean_WMH, data_clean_WMH$quantile_group, compute_iv_stats)
+
+# Convert the results into a data frame
+results_df_WMH <- do.call(rbind, results_iv_WMH)
+# Set row names to indicate quantile groups
+row.names(results_df_WMH) <- paste("Group", 1:5)
+# Print the results table
+results_df_WMH
+
+# Calculate statistics for testing heterogeneity
+effect_estimates_WMH <- c(0.884, 0.985, 0.962, 0.872, 3,053.366)
+std_errors_WMH <- c(0.3071, 0.0150, 0.0145, 0.0762, 25,050.6)
+variances_WMH <- std_errors_WMH^2
+meta_analysis_results_WMH <- rma(yi = effect_estimates_WMH, sei = std_errors_WMH, method = "FE")
+meta_analysis_results_WMH
+
+################################################################################
+# Get localized average causal effect estimates with outcome FIS
+# First-stage regression: Qualification ~ PRS + covariates
+regress_FIS <- lm(Qualification ~ PRS + age + sex + center, data = data_clean_FIS)
+# Calculate residuals
+data_clean_FIS$residuals <- residuals(regress_FIS)
+
+# Divide the residuals into 5 quantile groups
+data_clean_FIS$quantile_group <- cut(data_clean_FIS$residuals,
+                                     breaks = quantile(data_clean_FIS$residuals, probs = seq(0, 1, by = 0.2)),
+                                     include.lowest = TRUE,
+                                     labels = FALSE)
+head(data_clean_FIS)
+
+# Function to perform IV regression and extract needed statistics
+compute_iv_stats <- function(data) {
+  model_iv <- ivreg(FIS ~ Qualification + age + sex + center | PRS + age + sex + center, data = data)
+  weak_instrument_test <- summary(model_iv, diagnostics = TRUE)$diagnostics[1, ]
+  coef_est <- coef(summary(model_iv))[2, 1]  # Coefficient estimate
+  std_error <- coef(summary(model_iv))[2, 2]  # Standard error
+  weak_instr_stat <- weak_instrument_test["statistic"]  # Weak instrument statistic
+  weak_instr_pval <- weak_instrument_test["p-value"]  # p-value for weak instrument test
+  
+  c(Estimate = coef_est, Std.Error = std_error, Weak.Instrument.Statistic = weak_instr_stat, P.Value = weak_instr_pval)
+}
+
+# Apply function to each quantile group
+results_iv_FIS <- by(data_clean_FIS, data_clean_FIS$quantile_group, compute_iv_stats)
+
+# Convert the results into a data frame
+results_df_FIS <- do.call(rbind, results_iv_FIS)
+# Set row names to indicate quantile groups
+row.names(results_df_FIS) <- paste("Group", 1:5)
+# Print the results table
+results_df_FIS
+
+# Calculate statistics for testing heterogeneity
+effect_estimates_FIS <- c(3.5743365, 0.3020992, 0.3687764, 0.9336580, 33.2318368)
+std_errors_FIS <- c(0.68969805, 0.01880174, 0.01743091, 0.08450483, 6.66201292)
+variances_FIS <- std_errors^2
+meta_analysis_results_FIS <- rma(yi = effect_estimates_FIS, sei = std_errors_FIS, method = "FE")
+meta_analysis_results_FIS
+
+################################################################################
+# Calculate Q1 (25th percentile) and Q3 (75th percentile)
+Q1 <- quantile(data_clean_WMH$WMH, 0.25)
+Q3 <- quantile(data_clean_WMH$WMH, 0.75)
+
+# Calculate the Interquartile Range (IQR)
+IQR <- Q3 - Q1
+
+# Define lower and upper bounds for outliers
+lower_bound <- Q1 - 1 * IQR
+upper_bound <- Q3 + 1 * IQR
+
+# Filter the data to remove outliers
+data_clean_WMH_no_outliers <- subset(data_clean_WMH, WMH >= lower_bound & WMH <= upper_bound)
+
+# Check the new dataset
+head(data_clean_WMH_no_outliers)
+dim(data_clean_WMH_no_outliers)
+#25488  individuals
+table(data_clean_WMH_no_outliers$quantile_group)
+
+# Get localized average causal effect estimates with outcome WMH
+# First-stage regression: Qualification ~ PRS + covariates
+regress_WMH_no <- lm(Qualification ~ PRS + age + sex + center, data = data_clean_WMH_no_outliers)
+# Calculate residuals
+data_clean_WMH_no_outliers$residuals <- residuals(regress_WMH_no)
+
+# Divide the residuals into 5 quantile groups
+data_clean_WMH_no_outliers$quantile_group <- cut(data_clean_WMH_no_outliers$residuals,
+                                     breaks = quantile(data_clean_WMH_no_outliers$residuals, probs = seq(0, 1, by = 0.2)),
+                                     include.lowest = TRUE,
+                                     labels = FALSE)
+head(data_clean_WMH_no_outliers)
+table(data_clean_WMH_no_outliers$quantile_group)
+
+# Function to perform IV regression and extract needed statistics
+compute_iv_stats <- function(data) {
+  model_iv <- ivreg(log(WMH) ~ Qualification + age + sex + center | PRS + age + sex + center, data = data)
+  weak_instrument_test <- summary(model_iv, diagnostics = TRUE)$diagnostics[1, ]
+  coef_est <- coef(summary(model_iv))[2, 1]  # Coefficient estimate
+  std_error <- coef(summary(model_iv))[2, 2]  # Standard error
+  weak_instr_stat <- weak_instrument_test["statistic"]  # Weak instrument statistic
+  weak_instr_pval <- weak_instrument_test["p-value"]  # p-value for weak instrument test
+  
+  c(Estimate = coef_est, Std.Error = std_error, Weak.Instrument.Statistic = weak_instr_stat, P.Value = weak_instr_pval)
+}
+
+# Apply function to each quantile group
+results_iv_FIS_no <- by(data_clean_WMH_no_outliers, data_clean_WMH_no_outliers$quantile_group, compute_iv_stats)
+
+# Convert the results into a data frame
+results_df_FIS_no <- do.call(rbind, results_iv_FIS_no)
+# Set row names to indicate quantile groups
+row.names(results_df_FIS_no) <- paste("Group", 1:5)
+# Print the results table
+results_df_FIS_no
+
+# Calculate statistics for testing heterogeneity
+effect_estimates_WMH_no <- results_df_FIS_no[, 1]
+std_errors_WMH_no <- results_df_FIS_no[, 2]
+variances_WMH_no <- std_errors_WMH_no^2
+meta_analysis_results_WMH_no <- rma(yi = effect_estimates_WMH_no, sei = std_errors_WMH_no, method = "FE")
+meta_analysis_results_WMH_no
