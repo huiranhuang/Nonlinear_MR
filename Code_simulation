@@ -1,0 +1,440 @@
+# Load necessary libraries
+library(MASS)  # for mvrnorm function
+library(stats) # for rbinom, rexp, runif, rnorm
+
+par(mfrow=c(2,2))
+x1 <-seq(0, 5, length=200)
+plot(x1, 0.1 * x1^2, type="l", xlab="exposure", ylab="outcome", main="Quadratic association")
+plot(x1, 0.2 * (x1 - 1)^2, type="l", xlab="exposure", ylab="outcome", main="J-shaped association")
+plot(x1, 0.3 * (x1 - 2)^2, type="l", xlab="exposure", ylab="outcome", main="U-shaped association")
+plot(x1, 1 * pmax(x1 - 2, 0), type="l", xlab="exposure", ylab="outcome", main="Threshold association")
+
+
+# Function definitions for the different associations between x and y
+f1 <- function(x) { 0.4 * x }
+f2 <- function(x) { 0.1 * x^2 }
+f3 <- function(x) { 0.2 * (x - 1)^2 }
+f4 <- function(x) { 0.3 * (x - 2)^2 }
+f5 <- function(x) { 1 * pmax(x - 2, 0) }
+
+# Number of individuals
+n <- 10000
+
+# Generate data
+set.seed(123)
+g <- rbinom(n, 2, 0.3)
+epsilon_x <- rexp(n, 1)
+u <- runif(n, 0, 1)
+epsilon_y <- rnorm(n, 0, 1)
+
+# Generate x_i
+x <- 0.25 * g + u + epsilon_x
+quantile(x, 0.95)
+summary(lm(x~g))
+
+# Choose a function to generate y_i
+f_x1 <- f1  # Change this to f2, f3, f4, or f5 as needed
+f_x2 <- f2
+f_x3 <- f3
+f_x4 <- f4
+f_x5 <- f5
+
+# Generate y_i
+y1 <- f_x1(x) + 0.8 * u + epsilon_y
+y2 <- f_x2(x) + 0.8 * u + epsilon_y
+y3 <- f_x3(x) + 0.8 * u + epsilon_y
+y4 <- f_x4(x) + 0.8 * u + epsilon_y
+y5 <- f_x5(x) + 0.8 * u + epsilon_y
+
+
+# Create a data frame with the generated data
+data <- data.frame(x = x, y1 = y1, y2=y2, y3=y3, y4=y4, y5=y5, g = g, u = u, 
+                   epsilon_x = epsilon_x, epsilon_y = epsilon_y)
+
+library(AER)
+library(MASS)
+library(dplyr)
+library(broom)
+library(ggplot2)
+library(tidyr)
+library(metafor)
+library(quantreg)
+library(gridExtra)
+
+################################################################################
+# Get effect estimate using all samples 
+# Function to fit the IV model and extract ratio estimates for each case
+fit_iv_ratio_model <- function(data, case_name) {
+  iv_model <- ivreg(y ~ x | g, data = data)
+  estimates <- summary(iv_model)$coefficients
+  estimates <- as.data.frame(estimates)
+  estimates$case <- case_name
+  estimates$term <- rownames(estimates)
+  return(estimates)
+}
+
+# Generate data and fit models for each association case
+data_linear <- data.frame(x=x, y=y1, g=g, u=u, epsilon_x=epsilon_x)
+data_quadratic <- data.frame(x=x, y=y2, g=g, u=u, epsilon_x=epsilon_x)
+data_jshaped <- data.frame(x=x, y=y3, g=g, u=u, epsilon_x=epsilon_x)
+data_ushaped <- data.frame(x=x, y=y4, g=g, u=u, epsilon_x=epsilon_x)
+data_threshold <- data.frame(x=x, y=y5, g=g, u=u, epsilon_x=epsilon_x)
+
+# Get estimated effects
+estimates_linear_all <- fit_iv_ratio_model(data_linear, "Linear")
+estimates_quadratic_all <- fit_iv_ratio_model(data_quadratic, "Quadratic")
+estimates_jshaped_all <- fit_iv_ratio_model(data_jshaped, "J-shaped")
+estimates_ushaped_all <- fit_iv_ratio_model(data_ushaped, "U-shaped")
+estimates_threshold_all <- fit_iv_ratio_model(data_threshold, "Threshold")
+
+# Combine all estimates into one table
+all_estimates <- bind_rows(
+  estimates_linear_all,
+  estimates_quadratic_all,
+  estimates_jshaped_all,
+  estimates_ushaped_all,
+  estimates_threshold_all
+)
+
+# Filter out the intercept for plotting if not needed
+all_estimates <- all_estimates %>% filter(term == "x")
+
+# Plot the estimated coefficients using ggplot2
+ggplot(all_estimates, aes(x = case, y = Estimate, fill = case)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_errorbar(aes(ymin = Estimate - 1.96 * `Std. Error`, ymax = Estimate + 1.96 * `Std. Error`),
+                width = 0.2, position = position_dodge(0.9)) +
+  labs(title = "Estimated Coefficients for Different Association Cases",
+       x = "Association Case",
+       y = "Coefficient Estimate") +
+  theme_minimal()
+
+# Display the combined estimates
+print(all_estimates)
+
+################################################################################
+# Get estimates stratified by exposure levels
+# Generate data function
+generate_data <- function(f_x) {
+  g <- rbinom(n, 2, 0.3)
+  epsilon_x <- rexp(n, 1)
+  u <- runif(n, 0, 1)
+  epsilon_y <- rnorm(n, 0, 1)
+  x <- 0.25 * g + u + epsilon_x
+  y <- f_x(x) + 0.8 * u + epsilon_y
+  data <- data.frame(x = x, y = y, g = g, u = u, epsilon_x = epsilon_x, epsilon_y = epsilon_y)
+  return(data)
+}
+
+# Function to fit the IV model and extract estimates for each group
+fit_iv_model <- function(data) {
+  iv_model <- ivreg(y ~ x | g, data = data)
+  estimates <- summary(iv_model)$coefficients
+  estimates <- as.data.frame(estimates)
+  estimates$term <- rownames(estimates)
+  return(estimates)
+}
+
+# Function to get stratified estimates by exposure levels
+get_stratified_estimates_by_exposure <- function(f_x, case_name) {
+  data <- generate_data(f_x)
+  
+  # Split exposure into 5 equal groups (quantiles)
+  data <- data %>%
+    mutate(group = ntile(x, 5))
+  
+  # Fit IV model and extract estimates for each group
+  estimates_by_group <- data %>%
+    group_by(group) %>%
+    do({
+      fit_iv_model(.)
+    }) %>%
+    ungroup() %>%
+    mutate(case = case_name) %>%
+    select(case, group, term, Estimate = Estimate, StdError = `Std. Error`)
+  
+  return(estimates_by_group)
+}
+
+# Get stratified estimates for all cases
+estimates_linear <- get_stratified_estimates_by_exposure(f1, "Linear")
+estimates_quadratic <- get_stratified_estimates_by_exposure(f2, "Quadratic")
+estimates_jshaped <- get_stratified_estimates_by_exposure(f3, "J-shaped")
+estimates_ushaped <- get_stratified_estimates_by_exposure(f4, "U-shaped")
+estimates_threshold <- get_stratified_estimates_by_exposure(f5, "Threshold")
+
+# Combine all estimates into one table
+all_estimates <- bind_rows(
+  estimates_linear,
+  estimates_quadratic,
+  estimates_jshaped,
+  estimates_ushaped,
+  estimates_threshold
+)
+
+# Filter to only include the slope term (x)
+all_estimates <- all_estimates %>% filter(term == "x")
+print(all_estimates, n=25)
+
+# Function to create plots for each case
+create_plot <- function(estimates, case_name) {
+  ggplot(estimates %>% filter(case == case_name), aes(x = as.factor(group), y = Estimate, group = case)) +
+    geom_point(size = 3) +
+    geom_line() +
+    geom_errorbar(aes(ymin = Estimate - 1.96 * StdError, ymax = Estimate + 1.96 * StdError), width = 0.2) +
+    labs(title = paste("Estimates by Exposure Levels for", case_name, "Case"),
+         x = "Exposure Quantile",
+         y = "Coefficient Estimate") +
+    theme_minimal()
+}
+
+# Create separate plots for each case
+create_plot(all_estimates, "Linear")
+create_plot(all_estimates, "Quadratic")
+create_plot(all_estimates, "J-shaped")
+create_plot(all_estimates, "U-shaped")
+create_plot(all_estimates, "Threshold")
+
+################################################################################
+# Function to generate data for a given association function
+generate_data <- function(f_x, n) {
+  g <- rbinom(n, 2, 0.3)
+  epsilon_x <- rexp(n, 1)
+  u <- runif(n, 0, 1)
+  epsilon_y <- rnorm(n, 0, 1)
+  x <- 0.25 * g + u + epsilon_x
+  y <- f_x(x) + 0.8 * u + epsilon_y
+  data <- data.frame(x = x, y = y, g = g, u = u, epsilon_x = epsilon_x, epsilon_y = epsilon_y)
+  return(data)
+}
+
+# Function to calculate IV-free exposure level
+calculate_iv_free_exposure <- function(data) {
+  data <- data %>%
+    mutate(iv_free_exposure = x - 0.25 * g)
+  return(data)
+}
+
+# Function to stratify individuals based on IV-free exposure level
+stratify_iv_free_exposure <- function(data) {
+  data <- data %>%
+    mutate(stratum = case_when(
+      iv_free_exposure < 1 ~ "<1",
+      iv_free_exposure >= 1 & iv_free_exposure < 2 ~ "1-2",
+      iv_free_exposure >= 2 & iv_free_exposure < 3 ~ "2-3",
+      iv_free_exposure >= 3 ~ ">3"
+    ))
+  return(data)
+}
+
+# Function to fit the IV model and extract the coefficient and weak instrument statistic for each stratum
+fit_iv_model_stratum <- function(data) {
+  iv_model <- ivreg(y ~ x | g, data = data)
+  weak_instrument_test <- summary(iv_model, diagnostics = TRUE)$diagnostics[1, ]
+  list(
+    Estimate = coef(summary(iv_model))["x", "Estimate"],
+    Standard_Error = coef(summary(iv_model))[2, 2],
+    Weak_instrument_Statistic = weak_instrument_test["statistic"],
+    Weak_instrument_P_Value = weak_instrument_test["p-value"]
+  )
+}
+
+# Function to calculate LACE for each stratum
+calculate_lace <- function(data, f_x) {
+  data <- calculate_iv_free_exposure(data)
+  data <- stratify_iv_free_exposure(data)
+  
+  lace_results <- data %>%
+    group_by(stratum) %>%
+    summarise(
+      LACE = fit_iv_model_stratum(cur_data())$Estimate,
+      SD_LACE = fit_iv_model_stratum(cur_data())$Standard_Error,
+      Weak_Instrument_Statistic = fit_iv_model_stratum(cur_data())$Weak_instrument_Statistic,
+      Weak_Instrument_P_Value = fit_iv_model_stratum(cur_data())$Weak_instrument_P_Value
+    )
+  
+  return(lace_results)
+}
+
+# Perform multiple simulations and summarize the results
+simulate_lace_estimates <- function(f_x, n_simulations = 100, n = 10000) {
+  results_list <- list()
+  
+  for (i in 1:n_simulations) {
+    data <- generate_data(f_x, n)
+    lace_results <- calculate_lace(data, f_x)
+    results_list[[i]] <- lace_results
+  }
+  
+  combined_results <- bind_rows(results_list) %>%
+    group_by(stratum) %>%
+    summarise(
+      Mean_LACE = mean(LACE, na.rm = TRUE),
+      SD_LACE = mean(SD_LACE, na.rm = TRUE),
+      Mean_Weak_Instrument_Statistic = mean(Weak_Instrument_Statistic, na.rm = TRUE),
+      Mean_Weak_Instrument_P_Value = mean(Weak_Instrument_P_Value, na.rm = TRUE)
+    )
+  
+  return(combined_results)
+}
+
+# Example association functions
+f1 <- function(x) { 0.4 * x }
+f2 <- function(x) { 0.1 * x^2 }
+f3 <- function(x) { 0.2 * (x - 1)^2 }
+f4 <- function(x) { 0.3 * (x - 2)^2 }
+f5 <- function(x) { 1 * pmax(x - 2, 0) }
+
+# List of functions
+f_x_list <- list(f1, f2, f3, f4, f5)
+names(f_x_list) <- c("Linear", "Quadratic", "J-shaped", "U-shaped", "Threshold")
+
+# Run the simulation for each function
+results_list <- lapply(f_x_list, simulate_lace_estimates)
+
+# Combine results into a data frame
+results_df <- do.call(rbind, lapply(names(results_list), function(name) {
+  res <- results_list[[name]]
+  res$Case <- name
+  return(res)
+}))
+
+# Print the results
+results_df <- as.data.frame(results_df)
+print(results_df)
+
+################################################################################
+# Function to generate data for a given association function
+generate_data <- function(f_x, n) {
+  g <- rbinom(n, 2, 0.3)
+  epsilon_x <- rexp(n, 1)
+  u <- runif(n, 0, 1)
+  epsilon_y <- rnorm(n, 0, 1)
+  x <- 0.25 * g + u + epsilon_x
+  y <- f_x(x) + 0.8 * u + epsilon_y
+  data <- data.frame(x = x, y = y, g = g, u = u, epsilon_x = epsilon_x, epsilon_y = epsilon_y)
+  return(data)
+}
+
+# Function to calculate regression residuals of X on U
+calculate_residuals <- function(data) {
+  residuals <- resid(lm(x ~ g, data = data))
+  data <- mutate(data, residuals = residuals)
+  return(data)
+}
+
+# Function to stratify individuals based on residuals
+stratify_residuals <- function(data) {
+  data <- data %>%
+    mutate(stratum = ntile(residuals, 5))
+  return(data)
+}
+
+# Function to fit the IV model and extract the coefficient and p-value for each stratum
+fit_iv_model_stratum <- function(data) {
+  iv_model <- ivreg(y ~ x | g, data = data)
+  estimate <- coef(summary(iv_model))["x", "Estimate"]
+  SD_error <- coef(summary(iv_model))[2,2]
+  return(list(Estimate = estimate, SD=SD_error))
+}
+
+# Function to calculate LACE for each stratum
+calculate_lace <- function(data, f_x) {
+  data <- calculate_residuals(data)
+  data <- stratify_residuals(data)
+  
+  lace_results <- data %>%
+    group_by(stratum) %>%
+    summarise(
+      LACE = fit_iv_model_stratum(cur_data())$Estimate,
+      SD = fit_iv_model_stratum(cur_data())$SD
+    )
+  
+  return(lace_results)
+}
+
+# Perform multiple simulations and summarize the results
+simulate_lace_estimates <- function(f_x, n_simulations = 200, n = 5000) {
+  results_list <- list()
+  
+  for (i in 1:n_simulations) {
+    data <- generate_data(f_x, n)
+    lace_results <- calculate_lace(data, f_x)
+    results_list[[i]] <- lace_results
+  }
+  
+  combined_results <- bind_rows(results_list) %>%
+    group_by(stratum) %>%
+    summarise(
+      Mean_LACE = mean(LACE, na.rm = TRUE),
+      Mean_SD = mean(SD, na.rm = TRUE)
+    )
+  
+  return(combined_results)
+}
+
+# Example association functions
+f1 <- function(x) { 0.4 * x }
+f2 <- function(x) { 0.1 * x^2 }
+f3 <- function(x) { 0.2 * (x - 1)^2 }
+f4 <- function(x) { 0.3 * (x - 2)^2 }
+f5 <- function(x) { 1 * pmax(x - 2, 0) }
+
+# List of functions
+f_x_list <- list(f1, f2, f3, f4, f5)
+names(f_x_list) <- c("Linear", "Quadratic", "J-shaped", "U-shaped", "Threshold")
+
+# Run the simulation for each function
+results_list <- lapply(f_x_list, simulate_lace_estimates)
+
+# Combine results into a data frame
+results_df <- do.call(rbind, lapply(names(results_list), function(name) {
+  res <- results_list[[name]]
+  res$Case <- name
+  return(res)
+}))
+
+# Add the stratum labels for better readability
+results_df <- results_df %>%
+  arrange(Case, stratum) %>%
+  mutate(stratum_label = paste0("Stratum_", stratum))
+
+# Print the final results
+print(results_df, n=25)
+
+# Assuming you have the data as a data frame
+data <- data.frame(
+  stratum = rep(1:5, 5),  # Stratums 1 to 5 repeated for each case
+  Mean_LACE = c(-0.142, 0.0578, 0.164, 0.388, 0.916, 
+                0.429, 0.399, 0.402, 0.386, 0.382, 
+                0.107, 0.197, 0.295, 0.393, 0.678, 
+                0.00443, -0.00175, -0.0191, 0.420, 0.993,
+                -0.799, -0.799, -0.562, -0.341, -0.200),
+  Mean_SD = c(0.199, 0.202, 0.203, 0.203, 0.270,
+              0.199, 0.199, 0.200, 0.201, 0.217,
+              0.200, 0.202, 0.203, 0.203, 0.229,
+              0.199, 0.202, 0.203, 0.201, 0.221,
+              0.197, 0.197, 0.202, 0.202, 0.284),
+  Case = rep(c("J-shaped", "Linear", "Quadratic", "Threshold", "U-shaped"), each = 5),
+  stratum_label = rep(c("Stratum_1", "Stratum_2", "Stratum_3", "Stratum_4", "Stratum_5"), 5)
+)
+
+# Calculate the confidence intervals
+data <- data %>%
+  mutate(
+    CI_Lower = Mean_LACE - 1.96 * Mean_SD,
+    CI_Upper = Mean_LACE + 1.96 * Mean_SD
+  )
+
+# Create the coefficient plots
+ggplot(data, aes(x = stratum_label, y = Mean_LACE, group = Case, color = Case)) +
+  geom_point() +
+  geom_line() +
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper), width = 0.2) +
+  facet_wrap(~Case) +  # Separate plots for each case
+  theme_minimal() +
+  labs(title = "Localized Average Causal Effect Estimates",
+       x = "Stratum",
+       y = "Mean LACE",
+       color = "Case") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
