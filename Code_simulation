@@ -196,6 +196,7 @@ create_plot(all_estimates, "U-shaped")
 create_plot(all_estimates, "Threshold")
 
 ################################################################################
+# Get estimates stratified by IV-free Exposure
 # Function to generate data for a given association function
 generate_data <- function(f_x, n) {
   g <- rbinom(n, 2, 0.3)
@@ -302,6 +303,52 @@ results_df <- do.call(rbind, lapply(names(results_list), function(name) {
 # Print the results
 results_df <- as.data.frame(results_df)
 print(results_df)
+
+# List of unique cases
+cases <- unique(results_df$Case)
+
+# Function to calculate I^2 for each case
+calculate_I2 <- function(case_data, case_name) {
+  res <- rma(yi = Mean_LACE, sei = SD_LACE, data = case_data, method = "REML")
+  I2 <- res$I2
+  return(data.frame(Case = case_name, I2 = I2))
+}
+
+# Store I^2 results
+I2_results <- do.call(rbind, lapply(cases, function(case_name) {
+  case_data <- subset(results_df, Case == case_name)
+  calculate_I2(case_data, case_name)
+}))
+
+# Print the results
+print(I2_results)
+
+# Function to calculate Cochran's Q statistic
+calculate_cochrans_q <- function(estimates, variances) {
+  k <- length(estimates)
+  weights <- 1 / variances
+  weighted_mean <- sum(weights * estimates) / sum(weights)
+  Q <- sum(weights * (estimates - weighted_mean)^2)
+  return(Q)
+}
+
+# Function to perform Cochran's Q test for each association case
+perform_cochrans_q_test <- function(results_df) {
+  q_results <- results_df %>%
+    group_by(Case) %>%
+    summarise(
+      Q_statistic = calculate_cochrans_q(Mean_LACE, SD_LACE^2),
+      df = n() - 1,
+      p_value = pchisq(Q_statistic, df, lower.tail = FALSE)
+    )
+  return(q_results)
+}
+
+# Run Cochran's Q test for the simulation results
+q_results <- perform_cochrans_q_test(results_df)
+
+# Print Cochran's Q test results
+print(q_results)
 
 ################################################################################
 # Function to generate data for a given association function
